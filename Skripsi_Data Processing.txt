@@ -1,0 +1,297 @@
+# Import Library
+import numpy as np
+import pandas as pd
+import warnings
+warnings.filterwarnings('ignore')
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+sns.set_style('darkgrid')
+import statsmodels.api as sm
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots  # Import make_subplots
+pd.set_option('display.max_columns', None)
+
+# Loading the dataset
+edu_anak1 = pd.read_stata('/kaggle/input/b5-pendidikan-anak-hh14/b5_dla1.dta')
+edu_anak2 = pd.read_stata('/kaggle/input/b5-pendidikan-anak-hh14/b5_dla2.dta')
+edu_anak3 = pd.read_stata('/kaggle/input/b5-pendidikan-anak-hh14/b5_dla3.dta')
+
+# Data Preprocessing
+
+# DATASET ANAK
+
+# PILIHAN SEKOLAH
+# Tipe sekolah berdasarkan jenis dan pengelola
+eduanak = edu_anak2[['hhid14', 'pidlink', 'dla70', 'dla71', 'dlatype']]
+eduanak.rename(columns={'dla70' : 'jenis_sklh', 'dla71' : 'pengelola_sklh'}, inplace=True)
+# Kondisi-kondisi untuk pemilihan nilai var_dependen
+conditions = [
+    (eduanak['pengelola_sklh'] == '4:Private Islam') & (eduanak['jenis_sklh'].isin(['72:Madrasah Elementary', '73:Madrasah Junior High School', '74:Madrasah Senior High School'])),
+    (eduanak['pengelola_sklh'] == '4:Private Islam') & (eduanak['jenis_sklh'].isin(['2:Elementary', '3:Junior High School', '5:Senior High General'])),
+    (eduanak['pengelola_sklh'] == '2:Public religious') & (eduanak['jenis_sklh'].isin(['72:Madrasah Elementary', '73:Madrasah Junior High School', '74:Madrasah Senior High School'])),
+    ((eduanak['pengelola_sklh'] == '1:Public non-religious') | (eduanak['pengelola_sklh'] == '3:Private non-religious')) & (eduanak['jenis_sklh'].isin(['2:Elementary', '3:Junior High School', '5:Senior High General']))
+]
+# Nilai yang sesuai untuk masing-masing kondisi
+values = [1, 2, 3, 4]
+# Terapkan kondisi dan nilai ke kolom baru 'var_dependen'
+eduanak['choice_schl'] = np.select(conditions, values, default=np.nan)
+# Filtering berdasarkan Variabel Dependen dan pada tingkat SMP sederajat
+temp_eduanak = eduanak.dropna(subset=['choice_schl'])
+smp_eduanak = temp_eduanak[temp_eduanak['dlatype'] == '2:Junior High School']
+# Mengatasi Imbalance data 
+# Menghitung jumlah yang diizinkan untuk nilai 4
+allowed_count = 300
+# Menghitung jumlah nilai 4 yang ada dalam dataset
+count_4 = smp_eduanak[smp_eduanak['choice_schl'] == 4].shape[0]
+# Jika jumlah nilai 4 lebih dari yang diizinkan, ambil sampel acak dari nilai 4
+if count_4 > allowed_count:
+    smp_eduanak_filtered = smp_eduanak.copy()
+    smp_eduanak_filtered = smp_eduanak_filtered.drop(smp_eduanak_filtered[smp_eduanak_filtered['choice_schl'] == 4].sample(count_4 - allowed_count, random_state=42).index)
+else:
+    smp_eduanak_filtered = smp_eduanak.copy()
+# Menghpus id rumah tangga yang duplikat
+df_unique_id = smp_eduanak_filtered.drop_duplicates(subset=['hhid14'])
+
+# NILAI LOGIKA DAN MATEMATIKA ANAK
+nilai = edu_anak2[['hhid14', 'pidlink', 'dla76db', 'dla76dd']]
+nilai.rename(columns={'dla76db' : 'logic_score', 'dla76dd' : 'math_score'}, inplace=True)
+# Megre
+df_unique = df_unique_id[['hhid14', 'pidlink', 'choice_schl']]
+nilaip = pd.merge(df_unique, nilai_edu, on=['pidlink', 'hhid14'], how='inner')
+# Mengatasi null value
+mean_A = nilaip['logic_score'].mean()
+nilaip['logic_score'] = nilaip['logic_score'].fillna(mean_A)
+
+
+# DATASET AYAH DAN IBU
+temp0 = edu1_hh14[['hhid14', 'pidlink', 'dl10', 'dl2type']]
+temp0.rename(columns={'dl10' : 'jenis_sklh'}, inplace=True)
+temp1 = df_hh14[['hhid14', 'pidlink', 'ar02b','ar15']]
+temp1.rename(columns={'ar02b' : 'posisi_art', 'ar15' : 'agama'}, inplace=True)
+# Merge dataframe sementara dengan sample
+temp2 = pd.merge(temp0, temp1, on=['hhid14', 'pidlink'], how='inner')
+# Filter hanya rumah tangga Islam saja
+religion = ['1:Islam']
+temp3 = temp2[temp2['agama'].isin(religion)]
+# Membuat subset berdasarkan kondisi posisi anggota keluarga
+temp3 = temp3[temp3['posisi_art'].isin(['3:Children (biological', '1:Head of the household', '2:Husband/wife'])]
+# Ayah
+canu2 = ['1:Head of the household']
+temp_ayah = temp3[temp3["posisi_art"].isin(canu2)]
+# Ibu
+canu3 = ['2:Husband/wife']
+temp_ibu = temp3[temp3["posisi_art"].isin(canu3)]
+
+# TINGKAT PENDIDIKAN ORANG TUA
+def category_to_education(category):
+    if category == '1:Elementary':
+        return 1
+    elif category == '2:Junior high':
+        return 2
+    elif category == '3:Senior high':
+        return 3
+    elif category == '4:D1':
+        return 4
+    else:
+        return None  # Jika kategori tidak dikenali
+temp_ibu['edu_ibu'] = temp_ibu['dl2type'].apply(category_to_education)
+temp_ayah['edu_ayah'] = temp_ayah['dl2type'].apply(category_to_education)
+
+# MADRASAH ORANG TUA
+def kategorisasi_child_edu(row):
+    if row['jenis_sklh'] in ['72:Islamic Elementary School (Madrasah Ibtidaiyah)', '73:Islamic Junior/High School (Madrasah Tsanawiyah)', '74:Islamic Senior/High School (Madrasah Tsanawiyah)']:
+        return 1
+    else :
+        return 0
+temp_ayah['dummy_madrasah'] = temp_ayah.apply(kategorisasi_child_edu, axis=1)
+temp_ibu['dummy_madrasah'] = temp_ibu.apply(kategorisasi_child_edu, axis=1)
+
+# MERGE DATASET ANAK DENGAN DATASET AYAH DAN IBU
+temp_ayah = temp_ayah[['hhid14', 'edu_ayah', 'madrasah_ayah']]
+temp_ibu = temp_ibu[['hhid14','edu_ibu', 'madrasah_ibu']]
+# Mengubah tipe data kolom 'kategori' menjadi float
+temp_ayah['edu_ayah'] = temp_ayah['edu_ayah'].astype(float)
+temp_ibu['edu_ibu'] = temp_ibu['edu_ibu'].astype(float)
+# Merge
+temp_hh = pd.merge(nilaip, temp_ayah, on=['hhid14'], how='left')
+temp_hh = pd.merge(temp_hh, temp_ibu, on=['hhid14'], how='left')
+# Mengatasi null value
+missing_columns1 = ['edu_ayah', 'madrasah_ayah', 'edu_ibu', 'madrasah_ibu']
+def random_imputation(temp_hh, feature):
+    number_missing1 = temp_hh[feature].isnull().sum()
+    observed_values1 = temp_hh.loc[temp_hh[feature].notnull(), feature]
+    temp_hh.loc[temp_hh[feature].isnull(), feature + '_imp'] = np.random.choice(observed_values1, number_missing1, replace = True)
+    return temp_hh
+for feature in missing_columns1:
+    temp_hh[feature + '_imp'] = temp_hh[feature]
+    temp_hh = random_imputation(temp_hh, feature)
+# Pilih kolom yang dibutuhkan pada dataset gabungan
+temp_hh = temp_hh[['hhid14', 'pidlink', 'choice_schl', 'logic_score', 'math_score','edu_ayah_imp', 'madrasah_ayah_imp', 'edu_ibu_imp', 'madrasah_ibu_imp']]
+temp_hh.rename(columns={'edu_ayah_imp' : 'edu_ayah', 'madrasah_ayah_imp' : 'madrasah_ayah','edu_ibu_imp' : 'edu_ibu', 'madrasah_ibu_imp' : 'madrasah_ibu'}, inplace=True)
+
+# UKURAN RUMAH TANGGA
+# Membuat kolom 'household_size'
+temp_hh['household_size'] = temp_hh.groupby('hhid14')['hhid14'].transform('count')
+
+# PENGELUARAN PERKAPITA RUMAH TANGGA
+konsum1_hh14 = pd.read_stata('/kaggle/input/konsumsi-14/b1_ks1.dta')
+konsum2_hh14 = pd.read_stata('/kaggle/input/konsumsi-14/b1_ks2.dta')
+konsum3_hh14 = pd.read_stata('/kaggle/input/konsumsi-14/b1_ks3.dta')
+konsum0_hh14 = pd.read_stata('/kaggle/input/konsumsi-14/b1_ks0.dta')
+# Dataframe sementara
+konsum_1 = konsum1_hh14[['hhid14', 'ks1type', 'ks02']]
+konsum_2 = konsum2_hh14[['hhid14', 'ks2type', 'ks06']]
+konsum_3 = konsum3_hh14[['hhid14', 'ks3type', 'ks08']]
+konsum_0 = konsum0_hh14[['hhid14', 'ks10aa','ks10ab', 'ks11aa', 'ks11ab', 'ks12aa', 'ks12ab', 'ks12bb']]
+# Kolom pengeluaran rumah tangga dari semua tipe
+# Kelompokkan berdasarkan hhid dan jumlahkan pengeluaran
+tipe1 = konsum_1.groupby('hhid14')['ks02'].agg('sum').reset_index()
+tipe2 = konsum_2.groupby('hhid14')['ks06'].agg('sum').reset_index()
+tipe3 = konsum_3.groupby('hhid14')['ks08'].agg('sum').reset_index()
+# Buat kolom yang pengeluarannya dijadikan tahunan
+# Jumlah minggu dalam satu tahun (asumsi 52 minggu)
+jumlah_minggu_per_tahun = 52
+# Membuat kolom 'pengeluaran_tahunan' 
+tipe1['konsum1_monthly'] = tipe1['ks02'] * jumlah_minggu_per_tahun
+# Jumlah bulan dalam satu tahun
+jumlah_bulan_per_tahun = 12
+# Membuat kolom 'pengeluaran_tbulanan 
+tipe3['konsum3_monthly'] = tipe3['ks08'] / jumlah_bulan_per_tahun
+# Menjumlahkan pengeluaran pendidikan anak dalam dan luar HH
+konsum_0['konsum0_total1'] = (konsum_0['ks10aa'] + konsum_0['ks10ab']) / jumlah_bulan_per_tahun
+konsum_0['konsum0_total2'] = (konsum_0['ks11aa'] + konsum_0['ks11ab']) / jumlah_bulan_per_tahun
+konsum_0['konsum0_total3'] = (konsum_0['ks12aa'] + konsum_0['ks12ab']) / jumlah_bulan_per_tahun
+# Drop kolom
+tipe1 = tipe1.drop([ 'ks02'], axis=1)
+tipe3 = tipe3.drop([ 'ks08'], axis=1)
+tipe0 = konsum_0.drop(['ks10aa','ks10ab', 'ks11aa', 'ks11ab', 'ks12aa', 'ks12ab'], axis=1)
+# Merge dataframe sementara dengan sample
+konsum_temp1 = pd.merge(tipe1, tipe2, on=['hhid14'], how='inner')
+konsum_temp2 = pd.merge(konsum_temp1, tipe3, on=['hhid14'], how='inner')
+konsum_temp3 = pd.merge(konsum_temp2, tipe0, on=['hhid14'], how='inner')
+konsum_temp3['total'] = konsum_temp3['konsum1_monthly'] + konsum_temp3['konsum3_monthly'] + konsum_temp3['ks06'] + konsum_temp3['ks12bb'] + konsum_temp3['konsum0_total1'] + konsum_temp3['konsum0_total2'] + konsum_temp3['konsum0_total3']
+konsum_temp3 = konsum_temp3.drop(['konsum1_monthly','konsum3_monthly', 'ks06', 'ks12bb', 'konsum0_total1', 'konsum0_total2', 'konsum0_total3'], axis=1)
+temp_hh = pd.merge(temp_hh, konsum_temp3, on=['hhid14'], how='left')
+temp_hh['peng_percapita'] = temp_hh['total'] / temp_hh['household_size'] 
+temp_hh = temp_hh.drop(['total'], axis=1)
+
+# HARTA RUMAH TANGGA
+harta = pd.read_stata('/kaggle/input/hh14-b2-harta-hh/b2_hr1.dta')
+
+harta_hh14 = harta[['hhid14','hr02_f', 'hr02_d1', 'hr02_g', 'hr02_h', 'hr02_k2', 'hr02_a', 'hr02_c',
+       'hr02_k1', 'hr02_d3', 'hr02_b', 'hr02_e', 'hr02_d2', 'hr02_j']]
+harta_hh14['hr02_f'].fillna(0, inplace=True)
+harta_hh14['hr02_d1'].fillna(0, inplace=True)
+harta_hh14['hr02_g'].fillna(0, inplace=True)
+harta_hh14['hr02_h'].fillna(0, inplace=True)
+harta_hh14['hr02_k2'].fillna(0, inplace=True)
+harta_hh14['hr02_a'].fillna(0, inplace=True)
+harta_hh14['hr02_c'].fillna(0, inplace=True)
+harta_hh14['hr02_k1'].fillna(0, inplace=True)
+harta_hh14['hr02_d3'].fillna(0, inplace=True)
+harta_hh14['hr02_b'].fillna(0, inplace=True)
+harta_hh14['hr02_e'].fillna(0, inplace=True)
+harta_hh14['hr02_d2'].fillna(0, inplace=True)
+harta_hh14['hr02_j'].fillna(0, inplace=True)
+harta_hh14['total_harta'] = harta_hh14['hr02_f'] + harta_hh14['hr02_d1'] + harta_hh14['hr02_g'] + harta_hh14['hr02_h'] + harta_hh14['hr02_k2'] + harta_hh14['hr02_a'] + harta_hh14['hr02_c'] + harta_hh14['hr02_k1'] + harta_hh14['hr02_d3'] + harta_hh14['hr02_b'] + harta_hh14['hr02_e'] + harta_hh14['hr02_d2'] + harta_hh14['hr02_j']
+hrt = harta_hh14.groupby('hhid14')['total_harta'].agg('sum').reset_index()
+temp_hh = pd.merge(temp_hh, hrt, on=['hhid14'], how='inner')
+
+# TEMPAT TINGGAL RUMAH TANGGA
+daerah = pd.read_stata('/kaggle/input/ket-sampling/bk_sc1.dta')
+dae = daerah[['hhid14', 'sc05']]
+dae.rename(columns={'sc05': 'desa_kota'}, inplace=True)
+temp_hh = pd.merge(temp_hh, dae, on=['hhid14'], how='inner')
+jawa = daerah[['hhid14', 'sc01_14_14']]
+jawa.rename(columns={'sc01_14_14' : 'prov'}, inplace=True)
+temp_hh = pd.merge(temp_hh, jawa, on=['hhid14'], how='inner')
+lokal = daerah[['hhid14','sc01_14_14',  'sc02_14_14', 'sc03_14_14']]
+# Mengonversi kolom float menjadi string dan menggabungkannya menjadi kolom baru 'kode'
+lokal['alamat_hh'] = lokal['sc01_14_14'].astype(str) + lokal['sc02_14_14'].astype(str) + lokal['sc03_14_14'].astype(str)
+# Drop
+lokal = lokal.drop(['sc01_14_14',  'sc02_14_14', 'sc03_14_14'], axis=1)
+# Merge
+temp_hh = pd.merge(temp_hh, lokal, on=['hhid14'], how='inner')
+def category_to_float7(category):
+    if category == '1:Urban':
+        return 1
+    elif category == '2:Rural':
+        return 0
+    else:
+        return float('nan')  # Jika kategori tidak dikenali
+# Terapkan fungsi ke kolom 'kategori'
+temp_hh['desa_kota'] = temp_hh['desa_kota'].apply(category_to_float7)
+temp_hh['desa_kota'] = temp_hh['desa_kota'].astype(float)
+temp_hh = temp_hh.drop(['alamat_hh'], axis=1)
+# mengatasi null value
+mean_A = temp_hh['peng_percapita'].mean()
+temp_hh['peng_percapita'] = temp_hh['peng_percapita'].fillna(mean_A)
+
+# MERUBAH DATA INTERVAL DAN FLOAT MENJADI DATA KATEGORIK
+# Calculate the quartiles
+q1 = np.percentile(temp_hh['peng_percapita'], 25)
+q2 = np.percentile(temp_hh['peng_percapita'], 50)
+q3 = np.percentile(temp_hh['peng_percapita'], 75)
+# Create the new column
+def categorize_income(value):
+    if value < q1:
+        return 1
+    elif value < q2:
+        return 2
+    else:
+        return 3
+temp_hh['exp_cats'] = temp_hh['peng_percapita'].apply(categorize_income)
+# Calculate the quartiles
+q1 = np.percentile(temp_hh['total_harta'], 25)
+q2 = np.percentile(temp_hh['total_harta'], 50)
+q3 = np.percentile(temp_hh['total_harta'], 75)
+# Create the new column
+def categorize_wealth(value):
+    if value < q1:
+        return 1
+    elif value < q2:
+        return 2
+    else:
+        return 3
+temp_hh['harta_cats'] = temp_hh['total_harta'].apply(categorize_wealth)
+# LOGIC SCORE
+# Calculate the quartiles 
+q1 = np.percentile(temp_hh['logic_score'], 25)
+q2 = np.percentile(temp_hh['logic_score'], 50)
+q3 = np.percentile(temp_hh['logic_score'], 75)
+# Create the new column
+def categorize_logic(value):
+    if value < q1:
+        return 1
+    elif value < q2:
+        return 2
+    else:
+        return 3
+temp_hh['logic_cats'] = temp_hh['logic_score'].apply(categorize_logic)
+# MATH SCORE
+# Calculate the quartiles 
+q1 = np.percentile(temp_hh['math_score'], 25)
+q2 = np.percentile(temp_hh['math_score'], 50)
+q3 = np.percentile(temp_hh['math_score'], 75)
+# Create the new column
+def categorize_math(value):
+    if value < q1:
+        return 1
+    elif value < q2:
+        return 2
+    else:
+        return 3
+temp_hh['math_cats'] = temp_hh['math_score'].apply(categorize_math)
+# UKURAN RUMAH TANGGA
+def hhnum_cats(row):
+    if row['household_size'] <=4:
+        return 1
+    elif 6 <= row['household_size'] <= 9:
+        return 2
+    elif row['household_size'] >=12:
+        return 3
+temp_hh['household_size'] = temp_hh.apply(hhnum_cats, axis=1)
+
+# MENYIMPAN DATASET
+temp_hh.to_csv("4_choice_schl.csv")
